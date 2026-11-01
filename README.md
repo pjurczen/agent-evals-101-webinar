@@ -9,6 +9,8 @@ Each agent has an intentional bug. You find it in the traces, write evals that c
 
 Everything here works on the LangSmith Developer (free) plan!
 
+**About this fork.** It adds a solution to the take home in `recipe_remixer/evals/`: online evaluators, datasets built from live traces, and offline experiments. See [Recipe Remixer evals (this fork)](#recipe-remixer-evals-this-fork). Both bugs are fixed here. To see one again, undo its fix: the `STAPLES` list in `dinner_bot/agent.py`, or `rewrite(draft)` in `recipe_remixer/agent.py`, which was `rewrite(original)`.
+
 ## Repo layout
 
 ```text
@@ -30,9 +32,10 @@ agent-evals-101/
     ├── agent.py                    # the agent, its one tool (get_substitute), and the rewrite step
     ├── traces.json                 # 20 saved Recipe Remixer traces to build the dataset from
     ├── upload_traces.py            # uploads those traces to a recipe-remixer project
-    └── answer_key/                 # open when you're done
-        ├── agent.py                # Recipe Remixer with the bug fixed
-        └── llm_eval.py             # an LLM judge that catches the bug
+    ├── answer_key/                 # open when you're done
+    │   ├── agent.py                # Recipe Remixer with the bug fixed
+    │   └── llm_eval.py             # an LLM judge that catches the bug
+    └── evals/                      # this fork: online and offline evals, see below
 ```
 
 ## Setup
@@ -60,7 +63,7 @@ You need Python 3.11 or newer and [uv](https://docs.astral.sh/uv/).
 
    If your LangSmith account is in the EU or APAC region, also uncomment the matching `LANGSMITH_ENDPOINT` line. Otherwise your key won't work.
 
-   The rest of `.env.example` already has working defaults. `DATASET_NAME` and `JUDGE_DATASET_NAME` set the names of the datasets the scripts use. The commented out lines at the bottom let you swap models.
+   The rest of `.env.example` already has working defaults. `DATASET_NAME` and `JUDGE_DATASET_NAME` set the names of the datasets the scripts use. `REMIXER_REWRITE_DATASET_NAME` and `REMIXER_JUDGE_DATASET_NAME` name the datasets for this fork's Recipe Remixer evals. The commented out lines at the bottom let you swap models.
 
 `.env` stays on your machine. Don't commit it.
 
@@ -249,6 +252,92 @@ When you're done, compare your work with `recipe_remixer/answer_key/`. `agent.py
 uv run python -m recipe_remixer.answer_key.llm_eval
 uv run python -m recipe_remixer.answer_key.llm_eval --fixed
 ```
+
+## Recipe Remixer evals (this fork)
+
+`recipe_remixer/evals/` solves the take home the way you would on a live project. Instead of building datasets from a JSON file, it works from the traces in your `recipe-remixer` project:
+
+1. **Online evaluators** score every new trace as it arrives. The agent doesn't change. LangSmith runs them.
+2. **Datasets are built from those traces with filters**, including "traces the online judge failed."
+3. **Offline experiments** run on those datasets: the whole agent, and the `rewrite` step on its own.
+4. **An alignment check** tests a judge against your own labels before you trust it.
+
+### Layout
+
+```text
+recipe_remixer/evals/
+├── code/
+│   └── substitute_found.py     # code evaluator: did get_substitute find a swap?
+├── llm/
+│   ├── judge.py                # shared judge model and grading helper
+│   ├── steps_match/
+│   │   └── judge.py            # do the steps only use listed ingredients? (catches the bug)
+│   └── fits_diet/
+│       ├── judge.py            # does the recipe fit the diet the user asked for?
+│       └── alignment.py        # does fits_diet_judge agree with your labels?
+├── experiments/                # tests of the agent
+│   ├── agent.py                # the whole agent
+│   └── rewrite_step.py         # the rewrite step on its own
+├── online.py                   # attaches the online evaluators to the tracing project
+└── datasets.py                 # builds datasets from live traces
+```
+
+Evaluators live in `code/` or `llm/`, and a judge's own test sits next to it. The scripts in `experiments/` test the agent and use whichever evaluators they need.
+
+| Evaluator | Type | Question | Where it runs |
+| --- | --- | --- | --- |
+| `steps_match_judge` | LLM | Do the steps only use ingredients from the list? | Online on `remix_request` traces, offline in both experiments |
+| `fits_diet_judge` | LLM | Does the recipe fit the diet the user asked for? | Offline |
+| `substitute_found` | Code | Did `get_substitute` return a swap? | Online on `get_substitute` runs, offline in the agent experiment |
+
+### Run it
+
+You need the traces from exercise 2 in your `recipe-remixer` project. The online judge calls OpenAI from LangSmith, so also add `OPENAI_API_KEY` as a secret in your LangSmith workspace, under **Settings > Secrets**.
+
+1. Attach the online evaluators. `--backfill-from` also scores the traces already in the project, so pick a date before your oldest one:
+
+   ```bash
+   uv run python -m recipe_remixer.evals.online --backfill-from 2026-10-29
+   ```
+
+   The backfill takes a few minutes. After that, LangSmith scores every new trace on its own. To change an evaluator and rescore, run it again with `--replace`.
+
+2. Build the datasets from the traces:
+
+   ```bash
+   uv run python -m recipe_remixer.evals.datasets --since 2026-10-29
+   ```
+
+   `REMIXER_DATASET_NAME` gets one example per request. `REMIXER_REWRITE_DATASET_NAME` gets one example per trace that failed the online `steps_match_judge`: the agent's new ingredients with the original steps. Pass `--replace` to rebuild them.
+
+3. Run the experiments:
+
+   ```bash
+   uv run python -m recipe_remixer.evals.experiments.agent --prefix remixer-fixed
+   uv run python -m recipe_remixer.evals.experiments.rewrite_step
+   ```
+
+4. Check `fits_diet_judge` against your labels. Label traces in an annotation queue with `vegetarian_human` or `dairy_free_human`, add them to the dataset named by `REMIXER_JUDGE_DATASET_NAME`, then run:
+
+   ```bash
+   uv run python -m recipe_remixer.evals.llm.fits_diet.alignment
+   ```
+
+### What it found
+
+- Online, `steps_match_judge` failed 16 of the 21 traces in the project and agreed with the offline judge on all 21.
+- `substitute_found` flagged 2 of 29 tool calls: broccoli, which is already vegetarian, and parmesan, which isn't in the swap table.
+- With the fix, the agent passes `steps_match_judge` and `fits_diet_judge` on all 20 examples.
+- On its own, `rewrite` passes all 15 drafts. So the bug was in what `remix` passed to it, not in `rewrite` itself.
+
+### Lessons learned
+
+- **Give a judge only the rules it needs.** With both diets' rules in one prompt, `fits_diet_judge` failed dairy free recipes for having chicken.
+- **Have the judge explain before it answers.** With PASS or FAIL first, it failed oat milk recipes while saying they had no dairy.
+- **An online LLM judge maps variables with `output.<key>`**, not `outputs.<key>` as in the docs' example. With the wrong path, the judge got an empty recipe and passed every trace. The online prompt now fails a missing recipe instead.
+- **On a tracing project, LangSmith calls a code evaluator with the run only**, so `perform_eval` needs `example=None`.
+- **Backfill only happens when a rule is created**, and only from the date you give. `online.py --replace` deletes the evaluator, its rule, and its old scores, then recreates it.
+- **`client.runs.query` only looks back one day** unless you pass `min_start_time`.
 
 ## Learn more
 
