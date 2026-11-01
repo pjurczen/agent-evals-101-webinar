@@ -115,7 +115,7 @@ def remix(message: str, recipe: dict) -> dict:
     new = result["structured_response"]
     draft = Recipe(dish=new.dish, ingredients=new.ingredients, steps=original.steps)
 
-    steps = rewrite(original)
+    steps = rewrite(draft)
 
     remixed = Recipe(dish=new.dish, ingredients=new.ingredients, steps=steps)
     return {
