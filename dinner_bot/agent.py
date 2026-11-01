@@ -24,7 +24,7 @@ load_dotenv()
 MODEL_NAME = os.getenv("DINNER_BOT_MODEL", "openai:gpt-5-nano")
 REASONING_EFFORT = os.getenv("DINNER_BOT_REASONING_EFFORT", "low")
 
-STAPLES = ["salt", "pepper", "oil", "butter", "garlic", "onion", "soy sauce", "milk"]
+STAPLES = ["salt", "pepper", "oil", "water"]
 
 SYSTEM_PROMPT = """You are a dinner assistant in an app that keeps track of the user's kitchen.
 
@@ -98,5 +98,5 @@ def format_recipe(recipe: Recipe) -> str:
 
 
 if __name__ == "__main__":
-    kitchen = ["pasta", "eggs", "parmesan", "spinach"]
+    kitchen = ["pasta", "eggs", "parmesan", "spinach", "butter", "garlic", "onion", "soy sauce", "milk"]
     print(ask("What can I make for dinner?", kitchen)["recipe"])
